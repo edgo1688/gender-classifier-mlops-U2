@@ -1,2 +1,2 @@
-# chatgpt2-mlops-U2
-Chat GPT 2 model from ONNX
+# gender-classifier-mlops-U2
+Gender classifier model from ONNX
