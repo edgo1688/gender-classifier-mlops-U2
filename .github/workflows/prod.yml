@@ -1,0 +1,172 @@
+name: CI/CD Pipeline - Production
+
+on:
+  push:
+    branches:
+      - prod
+  workflow_dispatch:
+
+env:
+  AZURE_WEBAPP_NAME: genderclassifiermodel
+  REGISTRY_NAME: acrmlopsicesiu2.azurecr.io
+  IMAGE_NAME: gender-classifier
+  MODEL_URL: https://samlopsicesiu2.blob.core.windows.net/models/gender_googlenet.onnx
+
+jobs:
+  test:
+    name: Test Model
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Download test data from Azure Blob Storage
+        env:
+          AZURE_STORAGE_CONNECTION_STRING: ${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}
+        run: |
+          python -c "
+          import os
+          from azure.storage.blob import BlobServiceClient
+          
+          connection_string = os.getenv('AZURE_STORAGE_CONNECTION_STRING')
+          if connection_string:
+              try:
+                  blob_service_client = BlobServiceClient.from_connection_string(connection_string)
+                  blob_client = blob_service_client.get_blob_client(
+                      container='testdata',
+                      blob='test_samples.csv'
+                  )
+                  
+                  os.makedirs('test_data', exist_ok=True)
+                  with open('test_data/test_samples.csv', 'wb') as f:
+                      f.write(blob_client.download_blob().readall())
+                  print('Test data downloaded successfully')
+              except Exception as e:
+                  print(f'Warning: Could not download test data: {e}')
+                  print('Tests will use default data')
+          else:
+              print('No Azure connection string, using default test data')
+          "
+      
+      - name: Download ONNX model
+        run: |
+          mkdir -p model
+          curl -L -o model/gender_googlenet.onnx ${{ env.MODEL_URL }}
+          echo "Model downloaded successfully"
+          ls -lh model/
+      
+      - name: Run unit tests
+        env:
+          MODEL_PATH: ./model/gender_googlenet.onnx
+          AZURE_STORAGE_CONNECTION_STRING: ${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}
+        run: |
+          pytest tests/test_model.py -v --tb=short
+      
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: test-results-prod
+          path: |
+            test_data/
+            model/
+          retention-days: 5
+
+  build-and-deploy:
+    name: Build and Deploy
+    needs: test
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Log in to Azure Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY_NAME }}
+          username: ${{ secrets.AZURE_ACR_USERNAME }}
+          password: ${{ secrets.AZURE_ACR_PASSWORD }}
+      
+      - name: Build and push Docker image
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build \
+            -t ${{ env.REGISTRY_NAME }}/${{ env.IMAGE_NAME }}:prod-latest \
+            -t ${{ env.REGISTRY_NAME }}/${{ env.IMAGE_NAME }}:prod-${{ env.IMAGE_TAG }} \
+            -t ${{ env.REGISTRY_NAME }}/${{ env.IMAGE_NAME }}:latest \
+            .
+          
+          docker push ${{ env.REGISTRY_NAME }}/${{ env.IMAGE_NAME }}:prod-latest
+          docker push ${{ env.REGISTRY_NAME }}/${{ env.IMAGE_NAME }}:prod-${{ env.IMAGE_TAG }}
+          docker push ${{ env.REGISTRY_NAME }}/${{ env.IMAGE_NAME }}:latest
+          
+          echo "Image pushed successfully:"
+          echo "  - ${{ env.REGISTRY_NAME }}/${{ env.IMAGE_NAME }}:prod-latest"
+          echo "  - ${{ env.REGISTRY_NAME }}/${{ env.IMAGE_NAME }}:prod-${{ env.IMAGE_TAG }}"
+          echo "  - ${{ env.REGISTRY_NAME }}/${{ env.IMAGE_NAME }}:latest"
+      
+      - name: Deploy to Azure Web App
+        uses: azure/webapps-deploy@v2
+        with:
+          app-name: ${{ env.AZURE_WEBAPP_NAME }}
+          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE_PROD }}
+          images: ${{ env.REGISTRY_NAME }}/${{ env.IMAGE_NAME }}:prod-latest
+      
+      - name: Set Web App environment variables
+        uses: azure/CLI@v1
+        with:
+          azcliversion: latest
+          inlineScript: |
+            az webapp config appsettings set \
+              --name ${{ env.AZURE_WEBAPP_NAME }} \
+              --resource-group rgmlopsicesiu2 \
+              --settings \
+                ENVIRONMENT=prod \
+                MODEL_URL=${{ env.MODEL_URL }} \
+                AZURE_STORAGE_CONNECTION_STRING="${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}" \
+                PREDICTIONS_CONTAINER=predictions
+      
+      - name: Verify deployment
+        run: |
+          echo "Waiting for deployment to complete..."
+          sleep 30
+          
+          # Try to reach the health endpoint
+          HEALTH_URL="https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net/health"
+          echo "Checking health endpoint: $HEALTH_URL"
+          
+          for i in {1..10}; do
+            if curl -f -s -o /dev/null -w "%{http_code}" $HEALTH_URL | grep -q "200"; then
+              echo "✓ Deployment successful! App is healthy."
+              exit 0
+            fi
+            echo "Attempt $i: App not ready yet, waiting..."
+            sleep 10
+          done
+          
+          echo "Warning: Could not verify deployment health"
+      
+      - name: Deployment summary
+        run: |
+          echo "## Deployment Summary - PRODUCTION" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment**: Production" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image**: ${{ env.REGISTRY_NAME }}/${{ env.IMAGE_NAME }}:prod-latest" >> $GITHUB_STEP_SUMMARY
+          echo "- **Web App**: ${{ env.AZURE_WEBAPP_NAME }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **URL**: https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net" >> $GITHUB_STEP_SUMMARY
+          echo "- **Health**: https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net/health" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
