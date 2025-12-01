@@ -3,6 +3,8 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+.DS_Store
+
 # C extensions
 *.so
 
@@ -205,3 +207,15 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Models - ONNX files should not be in repo
+*.onnx
+model/
+models/
+
+# Test data - should be downloaded from Azure
+test_data/
+*.csv
+
+# Azure
+.azure/
