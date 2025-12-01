@@ -100,6 +100,11 @@ jobs:
           username: ${{ secrets.AZURE_ACR_USERNAME }}
           password: ${{ secrets.AZURE_ACR_PASSWORD }}
       
+      - name: Log in to Azure
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      
       - name: Build and push Docker image
         env:
           IMAGE_TAG: ${{ github.sha }}
@@ -125,10 +130,10 @@ jobs:
             az webapp config container set \
               --name ${{ env.AZURE_WEBAPP_NAME }} \
               --resource-group rgmlopsicesiu2 \
-              --docker-custom-image-name ${{ env.REGISTRY_NAME }}/${{ env.IMAGE_NAME }}:dev-latest \
-              --docker-registry-server-url https://${{ env.REGISTRY_NAME }} \
-              --docker-registry-server-user ${{ secrets.AZURE_ACR_USERNAME }} \
-              --docker-registry-server-password ${{ secrets.AZURE_ACR_PASSWORD }}
+              --container-image-name ${{ env.REGISTRY_NAME }}/${{ env.IMAGE_NAME }}:dev-latest \
+              --container-registry-url https://${{ env.REGISTRY_NAME }} \
+              --container-registry-user ${{ secrets.AZURE_ACR_USERNAME }} \
+              --container-registry-password ${{ secrets.AZURE_ACR_PASSWORD }}
             
             echo "Container image updated to: ${{ env.REGISTRY_NAME }}/${{ env.IMAGE_NAME }}:dev-latest"
             
