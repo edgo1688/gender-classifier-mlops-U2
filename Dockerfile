@@ -16,6 +16,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY src/ ./src/
+COPY scripts/download_model.py ./scripts/
 
 # Create model directory
 RUN mkdir -p /app/model
@@ -26,14 +27,7 @@ ENV MODEL_PATH=/app/model/gender_googlenet.onnx
 ENV MODEL_URL=https://samlopsicesiu2.blob.core.windows.net/models/gender_googlenet.onnx
 
 # Download model at build time (alternative: download at runtime in app)
-RUN python -c "import requests; import os; \
-    os.makedirs(os.path.dirname(os.getenv('MODEL_PATH')), exist_ok=True); \
-    response = requests.get(os.getenv('MODEL_URL'), stream=True); \
-    response.raise_for_status(); \
-    with open(os.getenv('MODEL_PATH'), 'wb') as f: \
-        for chunk in response.iter_content(chunk_size=8192): \
-            f.write(chunk); \
-    print('Model downloaded successfully')"
+RUN python scripts/download_model.py
 
 # Expose port
 EXPOSE 8000
